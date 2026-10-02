@@ -149,6 +149,160 @@ function formatMarkerPosition(markerNumber, totalMarkers) {
     return totalMarkers > 1 ? ` ${markerNumber}/${totalMarkers}` : "";
 }
 
+// A marker as it ends up in the rendered message.  [[IMG: ... ]] is not a
+// markdown construct, so ST leaves it sitting in a text node untouched.
+const MARKER_TEXT_REGEX = /\[\[IMG:\s*.+?\s*\]\]/gs;
+
+// ST's sanitizer prefixes custom classes with "custom-" (see addDOMPurifyHooks
+// in chats.js), so a marker rendered from message.mes carries the prefixed name
+// while one we inserted ourselves keeps the raw one.  Both have to be matched.
+const MARKER_INDEX_CLASS = /^(?:custom-)?comfyinject-idx-(\d+)$/;
+
+/**
+ * Returns the rendered text container of a message, if it is currently on screen.
+ * @param {number} messageIndex
+ * @returns {HTMLElement|null}
+ */
+function getMesText(messageIndex) {
+    return document.querySelector(`[mesid="${messageIndex}"] .mes_text`);
+}
+
+/**
+ * Builds the <img> element for a finished generation.
+ * Kept in sync with buildImgTag(), which renders the stored HTML string.
+ * @param {string} imageUrl
+ * @param {string} prompt
+ * @param {number} seed
+ * @returns {HTMLImageElement}
+ */
+function createImageElement(imageUrl, prompt, seed) {
+    const img = document.createElement("img");
+    img.className = "comfyinject-image";
+    img.src = imageUrl;
+    img.dataset.prompt = prompt;
+    img.dataset.seed = String(seed);
+    return img;
+}
+
+/**
+ * Builds the placeholder element shown while a marker's image is generating.
+ * @param {number} markerIndex
+ * @param {number} markerCount
+ * @returns {HTMLSpanElement}
+ */
+function createPendingElement(markerIndex, markerCount) {
+    const span = document.createElement("span");
+    span.className = `comfyinject-pending comfyinject-idx-${markerIndex}`;
+    span.textContent = `[Generating image ${markerIndex + 1}/${markerCount}...]`;
+    return span;
+}
+
+/**
+ * Builds the element shown when a marker produced no image.
+ * @param {string} text
+ * @returns {HTMLSpanElement}
+ */
+function createErrorElement(text) {
+    const span = document.createElement("span");
+    span.className = "comfyinject-error";
+    span.textContent = text;
+    return span;
+}
+
+/**
+ * Replaces every [[IMG: ...]] marker in a rendered message with an element,
+ * touching only the text nodes that hold a marker.
+ *
+ * This is what keeps the rest of the message safe: updateMessageBlock() would
+ * rebuild all of .mes_text and discard anything other extensions attached to
+ * it — LittleWhiteBox renders HTML code blocks into sandboxed iframes, and its
+ * panel would be replaced by the raw code block with nothing left to rebuild it.
+ * @param {HTMLElement} mesText - The message's .mes_text element
+ * @param {() => Node} createNode - Called once per marker, in document order
+ * @returns {number} How many markers were replaced
+ */
+function replaceMarkerText(mesText, createNode) {
+    const walker = document.createTreeWalker(mesText, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+    let replaced = 0;
+
+    for (const node of textNodes) {
+        const text = node.nodeValue;
+        if (!text?.includes("[[IMG:")) continue;
+
+        const matches = [...text.matchAll(MARKER_TEXT_REGEX)];
+        if (matches.length === 0) continue;
+
+        // Build the elements in document order, then splice them in from the
+        // back so the offsets of the earlier matches stay valid.
+        const elements = matches.map(() => createNode());
+
+        for (let i = matches.length - 1; i >= 0; i--) {
+            const match = matches[i];
+            node.splitText(match.index + match[0].length);
+            const target = node.splitText(match.index);
+            target.replaceWith(elements[i]);
+        }
+
+        replaced += matches.length;
+    }
+
+    return replaced;
+}
+
+/**
+ * Returns the next free marker index for a rendered message — one past the
+ * highest index already present in it.
+ * @param {HTMLElement} mesText
+ * @returns {number}
+ */
+function getNextMarkerIndex(mesText) {
+    let next = 0;
+
+    for (const element of mesText.querySelectorAll("[class*='comfyinject-idx-']")) {
+        for (const className of element.classList) {
+            const match = MARKER_INDEX_CLASS.exec(className);
+            if (match) next = Math.max(next, Number(match[1]) + 1);
+        }
+    }
+
+    return next;
+}
+
+/**
+ * Points a rendered message at its markers without rebuilding it.
+ *
+ * Markers already in the DOM — placeholders the live stream inserted as it
+ * streamed, or ones rendered back from message.mes — keep the index they were
+ * created with.  Only markers still sitting in the message as literal text need
+ * an element built for them, and they follow the markers already resolved, in
+ * the same order parseImageMarkers() reports them.
+ * @param {number} messageIndex
+ * @param {number} markerCount
+ */
+function prepareMarkerSlots(messageIndex, markerCount) {
+    const mesText = getMesText(messageIndex);
+    if (!mesText) return;
+
+    let nextIndex = getNextMarkerIndex(mesText);
+    replaceMarkerText(mesText, () => createPendingElement(nextIndex++, markerCount));
+}
+
+/**
+ * Returns the element currently standing in for one marker, if it is rendered.
+ * @param {number} messageIndex
+ * @param {number} markerIndex
+ * @returns {Element|null}
+ */
+function getMarkerSlot(messageIndex, markerIndex) {
+    const mesText = getMesText(messageIndex);
+    if (!mesText) return null;
+
+    return mesText.querySelector(`.comfyinject-idx-${markerIndex}, .custom-comfyinject-idx-${markerIndex}`);
+}
+
 let activeStream = null;
 const LIVE_STREAM_SCAN_INTERVAL_MS = 500;
 
@@ -367,7 +521,9 @@ function renderLiveStream() {
         const markerPosition = formatMarkerPosition(i + 1, totalMarkers);
 
         if (!job || job.result === null) {
-            return `<span class="comfyinject-pending">[Generating image${markerPosition}...]</span>`;
+            // The index lets processMessage() pick this placeholder back up
+            // after the stream ends instead of re-rendering the message.
+            return `<span class="comfyinject-pending comfyinject-idx-${i}">[Generating image${markerPosition}...]</span>`;
         }
 
         const result = job.result;
@@ -395,8 +551,9 @@ function addRetryButtons(index) {
     const messageNode = document.querySelector(`[mesid="${index}"]`);
     if (!messageNode) return;
 
-    // ST's sanitizer prefixes custom classes with "custom-" in the rendered DOM
-    const images = messageNode.querySelectorAll(".custom-comfyinject-image");
+    // ST's sanitizer prefixes custom classes with "custom-" in messages rendered
+    // from mes, while images we insert into the DOM ourselves keep the raw name.
+    const images = messageNode.querySelectorAll(".comfyinject-image, .custom-comfyinject-image");
     if (images.length === 0) return;
 
     const sendDate = message.send_date;
@@ -493,7 +650,12 @@ async function processMessage(index, options = {}) {
             const i = pidx++;
             return `<span class="comfyinject-pending comfyinject-idx-${i}">[Generating image ${i + 1}/${markerCount}...]</span>`;
         });
-        try { updateMessageBlock(index, message); } catch (_e) {}
+
+        // Mirror that in the rendered message by swapping the markers themselves
+        // for placeholder elements.  updateMessageBlock() is deliberately not
+        // used here: it rebuilds all of .mes_text, which takes out anything other
+        // extensions have attached to the message (rendered HTML panels, etc).
+        prepareMarkerSlots(index, markerCount);
 
         const useLiveGenerations = activeStream && index === getLiveMessageIndex();
 
@@ -503,8 +665,9 @@ async function processMessage(index, options = {}) {
 
         /**
          * Called synchronously when each job settles.
-         * Replaces the matching indexed placeholder and immediately re-renders
-         * so the user sees each image as soon as it is ready.
+         * Swaps the matching indexed placeholder for the finished image and
+         * updates message.mes, so the user sees each image as soon as it is
+         * ready without the message being re-rendered.
          * @param {object} result
          * @param {number} markerIndex
          */
@@ -518,11 +681,13 @@ async function processMessage(index, options = {}) {
             const markerNumber = markerIndex + 1;
             const markerPosition = formatMarkerPosition(markerNumber, markerCount);
             let replacement;
+            let replacementElement;
 
             if (result?.status === "ok") {
                 if (hasMeaningfulRepair(result.repairMeta)) repairedCount++;
                 results[markerIndex] = result;
                 replacement = buildImgTag(result.imageUrl, result.prompt, result.seed);
+                replacementElement = createImageElement(result.imageUrl, result.prompt, result.seed);
 
             } else if (result?.status === "parse_error") {
                 const reason = result?.reason;
@@ -538,6 +703,7 @@ async function processMessage(index, options = {}) {
                 });
                 if (!suppressRepairNotifications) maybeShowParseFailureToast(errorText);
                 replacement = `<span class="comfyinject-error">${errorText}</span>`;
+                replacementElement = createErrorElement(errorText);
 
             } else if (result?.status === "generation_error") {
                 const errorText = `[Image generation failed${markerPosition ? `: marker${markerPosition}` : ""}]`;
@@ -545,6 +711,7 @@ async function processMessage(index, options = {}) {
                     messageIndex: index, markerNumber, totalMarkers: markerCount,
                 });
                 replacement = `<span class="comfyinject-error">${errorText}</span>`;
+                replacementElement = createErrorElement(errorText);
 
             } else {
                 const errorText = `[Image generation failed${markerPosition ? `: marker${markerPosition}` : ""}]`;
@@ -552,6 +719,7 @@ async function processMessage(index, options = {}) {
                     result, messageIndex: index, markerNumber, totalMarkers: markerCount,
                 });
                 replacement = `<span class="comfyinject-error">${errorText}</span>`;
+                replacementElement = createErrorElement(errorText);
             }
 
             // Target exactly the indexed placeholder — safe for out-of-order completion.
@@ -559,7 +727,20 @@ async function processMessage(index, options = {}) {
                 new RegExp(`<span[^>]*comfyinject-idx-${markerIndex}"[^>]*>[^<]*</span>`),
                 replacement
             );
-            try { updateMessageBlock(index, currentMessage); } catch (_e) {}
+
+            // Swap that same marker's node in the rendered message, leaving the
+            // rest of it — including anything other extensions put there — intact.
+            const slot = getMarkerSlot(index, markerIndex);
+
+            if (slot) {
+                slot.replaceWith(replacementElement);
+            } else if (getMesText(index)) {
+                // The marker is on screen but has no single node to swap, which
+                // happens when ST splits it with inline markup. Re-render as a
+                // last resort: it costs other extensions their DOM work, but the
+                // image still shows up.
+                try { updateMessageBlock(index, currentMessage); } catch (_e) {}
+            }
         };
 
         // Build one promise per marker.
@@ -599,7 +780,11 @@ async function processMessage(index, options = {}) {
                 );
                 if (cleaned !== cancelledMessage.mes) {
                     cancelledMessage.mes = cleaned;
-                    try { updateMessageBlock(index, cancelledMessage); } catch (_e) {}
+
+                    // Same edit in the rendered message, in place.
+                    getMesText(index)
+                        ?.querySelectorAll(".comfyinject-pending, .custom-comfyinject-pending")
+                        .forEach(node => node.replaceWith(createErrorElement("[Image generation cancelled]")));
                 }
             }
 
@@ -834,15 +1019,36 @@ async function retryImage(sendDate, imgIndex, retryBtn = null) {
         return match;
     });
 
-    // Re-render
-    try {
-        updateMessageBlock(messageIndex, message);
-    } catch (e) {
-        // ST's reasoning handler may crash on some messages, that's okay
-    }
+    // Swap the rendered <img> in place rather than re-rendering the message.
+    // updateMessageBlock() rebuilds all of .mes_text, which throws away DOM-only
+    // work from other extensions — LittleWhiteBox replaces HTML code blocks with
+    // sandboxed iframes, and the message would fall back to showing the raw HTML
+    // as a code block until something else re-rendered it.
+    const messageNode = document.querySelector(`[mesid="${messageIndex}"]`);
+    const renderedImages = messageNode?.querySelectorAll(".comfyinject-image, .custom-comfyinject-image") ?? [];
+    const renderedImage = renderedImages[imgIndex];
 
-    // Re-add retry buttons since updateMessageBlock wipes the DOM
-    addRetryButtons(messageIndex);
+    if (renderedImage) {
+        renderedImage.src = imageUrl;
+        renderedImage.dataset.seed = String(effectiveSeed);
+
+        // The button survives the in-place update, so clear its spinner here.
+        if (retryBtn) {
+            retryBtn.innerHTML = `<i class="fa-solid fa-rotate"></i>`;
+            retryBtn.style.pointerEvents = "auto";
+        }
+    } else {
+        // Image isn't in the DOM (message not rendered, or outside the rendered
+        // window), so fall back to a full re-render to keep mes and DOM in sync.
+        try {
+            updateMessageBlock(messageIndex, message);
+        } catch (e) {
+            // ST's reasoning handler may crash on some messages, that's okay
+        }
+
+        // Re-add retry buttons since updateMessageBlock wipes the DOM
+        addRetryButtons(messageIndex);
+    }
 
     // Persist
     await context.saveMetadata();
