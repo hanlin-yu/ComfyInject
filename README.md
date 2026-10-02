@@ -343,6 +343,22 @@ In messages with multiple images, each retry button only affects its own image â
 
 ---
 
+## Prompt Rewrite Button
+
+Re-rolling a seed cannot fix a prompt that was simply written badly. The wand button (below the retry button on every image) sends that image's prompt to your LLM and asks it to rewrite the prompt itself, then regenerates the image with the rewritten one.
+
+- **The rules come from your preset.** The image-prompt specification is read from the prompt block named `ComfyInject` in your active completion preset, so editing the preset keeps both in sync. If no such block exists, the extension falls back to a built-in set of Danbooru-tag conventions and warns once. You can pin your own rules instead with **Rewrite rules override**.
+- **What the model sees:** the text around that image (the **Context window** setting, default 1200 characters each side), your character card's description/personality/scenario, and the other images in the same message with their AR/SHOT. The other prompts matter because a preset that requires several markers per message also imposes framing rules across them.
+- **What the model may change:** the prompt text only. AR, SHOT and seed are kept, so the result is directly comparable with the image it replaces.
+- **The rewritten prompt is saved** into the image tag in the message, which means later retries use it and the LLM sees it in its next-turn context. The undo toast restores the previous prompt *and* image if you prefer the original.
+- **Model calls** go through SillyTavern's `generateRaw`, so they use your main API, never touch the visible chat, and do not interrupt a running generation. The button refuses to run while a generation or another rewrite is in flight.
+
+Settings under **AI Prompt Rewrite**: rules source, override text, context window, max response tokens and timeout. **Log resolved rules** prints which rules would be used and where they came from.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
 ## Custom Workflows
 
 The default workflow (`workflows/comfyinject_default.json`) uses only built-in ComfyUI nodes and works out of the box with any standard checkpoint.

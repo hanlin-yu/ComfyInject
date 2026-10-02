@@ -254,6 +254,54 @@
 
                 <hr class="sysHR" />
 
+                <!-- AI Prompt Rewrite -->
+                <div class="flex-container flexGap5">
+                    <div id="comfyinject_rewrite_toggle" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        <span>AI Prompt Rewrite</span>
+                    </div>
+                </div>
+
+                <div id="comfyinject_rewrite_block" style="display:none;">
+                    <small>Adds a second button to every image: the LLM rewrites that image's prompt and the image is regenerated with it. AR, SHOT and seed are kept.</small>
+                    <br />
+
+                    <div class="flex-container flexGap5 alignItemsCenter" style="margin: 8px 0;">
+                        <label class="checkbox_label" for="comfyinject_rewrite_auto_read_preset" title="Read the image-prompt rules from the prompt block named ComfyInject in the active preset.">
+                            <input id="comfyinject_rewrite_auto_read_preset" type="checkbox" />
+                            <span>Read rules from the active preset</span>
+                        </label>
+                    </div>
+
+                    <label for="comfyinject_rewrite_rules_override">Rewrite rules override</label>
+                    <textarea id="comfyinject_rewrite_rules_override" class="text_pole" rows="6" placeholder="Leave empty to use the ComfyInject prompt block from your active preset."></textarea>
+                    <small>When filled, these rules are used instead of the preset block.</small>
+                    <br />
+
+                    <div class="flex-container flexGap5 alignItemsCenter" style="margin-top: 8px;">
+                        <label style="width: 170px;">Context window (chars)</label>
+                        <input id="comfyinject_rewrite_context_chars" type="number" class="text_pole" min="200" max="6000" step="100" style="width: 120px;" />
+                    </div>
+                    <div class="flex-container flexGap5 alignItemsCenter" style="margin-top: 4px;">
+                        <label style="width: 170px;">Max response tokens</label>
+                        <input id="comfyinject_rewrite_max_tokens" type="number" class="text_pole" min="200" max="8000" step="100" style="width: 120px;" />
+                    </div>
+                    <div class="flex-container flexGap5 alignItemsCenter" style="margin-top: 4px;">
+                        <label style="width: 170px;">Timeout (ms)</label>
+                        <input id="comfyinject_rewrite_timeout_ms" type="number" class="text_pole" min="5000" max="600000" step="5000" style="width: 120px;" />
+                    </div>
+                    <small>How much narrative around the image is sent as context, how long the reply may be, and when to give up on the model.</small>
+
+                    <div class="flex-container flexGap5" style="margin-top: 8px;">
+                        <div id="comfyinject_rewrite_debug" class="menu_button menu_button_icon" title="Log which rules the rewrite would use.">
+                            <i class="fa-solid fa-bug"></i>
+                            <span>Log resolved rules</span>
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="sysHR" />
+
                 <!-- Max Poll Attempts -->
                 <div class="flex-container flexGap5 alignItemsCenter">
                     <label for="comfyinject_max_poll_attempts">Max Poll Attempts</label>
