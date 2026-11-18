@@ -1,8 +1,17 @@
 import { MODULE_NAME, defaultSettings } from "../settings.js";
 import { openGallery } from "./gallery.js";
+import { appendLoraNode, extractLoraChain, findLoaderNodeId, removeLoraNode, setLoraWeight } from "./loraChain.js";
 import { resolveRulesText } from "./rewrite.js";
+import { getOrLoadWorkflow, getRuntimeWorkflow, markDirty, reloadWorkflow, serializeWorkflow } from "./workflowRuntime.js";
 
 const EXTENSION_FOLDER = `scripts/extensions/third-party/ComfyInject`;
+
+// LoRA Chain panel state. Edits live on the cached runtime workflow, not in settings.
+let loraRows = [];
+let loraLoaderId = null;
+let loraWorkflowFile = "";
+let loraLoadToken = 0;
+let loraPanelTimer = null;
 
 /**
  * Gets the current live settings from ST.
@@ -91,6 +100,178 @@ async function refreshCheckpointList(showToast = true) {
     } else if (showToast) {
         toastr.warning("Could not reach ComfyUI. Is it running?", "ComfyInject");
     }
+}
+
+/**
+ * Escapes a string for safe interpolation into HTML text or attributes.
+ * @param {unknown} value - The value to escape
+ * @returns {string} The escaped string
+ */
+function escapeHtml(value) {
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+}
+
+/**
+ * Tells whether a node id belongs to a LoRA added through the panel.
+ * @param {string} id - The workflow node id
+ * @returns {boolean}
+ */
+function isAppendedLoraId(id) {
+    return id.startsWith("comfyinject_lora_");
+}
+
+/**
+ * Dims the Add button and blocks its pointer events when the workflow has no
+ * usable loader. The click handler also checks `loraLoaderId`, so a programmatic
+ * click cannot append without one.
+ * @param {boolean} enabled - Whether adding is allowed
+ */
+function setLoraAddEnabled(enabled) {
+    $("#comfyinject_lora_add")
+        .css("opacity", enabled ? 1.0 : 0.4)
+        .css("pointer-events", enabled ? "auto" : "none");
+}
+
+/**
+ * Fetches the LoRA filenames ComfyUI knows about and fills the name datalist.
+ * Errors are swallowed silently — the datalist is only a convenience.
+ */
+async function fetchLoraNames() {
+    const settings = getSettings();
+    const names = new Set();
+
+    for (const cls of ["LoraLoaderModelOnly", "LoraLoader"]) {
+        try {
+            const response = await fetch(`${settings.comfy_host}/object_info/${cls}`);
+            if (!response.ok) continue;
+            const data = await response.json();
+            for (const name of data?.[cls]?.input?.required?.lora_name?.[0] ?? []) {
+                names.add(name);
+            }
+        } catch (err) {
+            // ComfyUI may be unreachable; the datalist stays empty.
+        }
+    }
+
+    const datalist = $("#comfyinject_lora_names");
+    datalist.empty();
+    for (const name of names) {
+        datalist.append(`<option value="${escapeHtml(name)}"></option>`);
+    }
+}
+
+/**
+ * Loads the runtime copy of the configured workflow and renders its LoRA chain.
+ * Stale async loads are discarded after a newer one starts.
+ */
+async function loadLoraPanel() {
+    const filename = getSettings().workflow || "";
+    const token = ++loraLoadToken;
+
+    if (!filename) {
+        loraRows = [];
+        loraLoaderId = null;
+        loraWorkflowFile = "";
+        $("#comfyinject_lora_rows").empty();
+        $("#comfyinject_lora_status").text("Set a workflow filename.");
+        setLoraAddEnabled(false);
+        return;
+    }
+
+    let entry;
+    try {
+        entry = await getOrLoadWorkflow(filename);
+    } catch (err) {
+        if (token !== loraLoadToken) return;
+        loraRows = [];
+        loraLoaderId = null;
+        loraWorkflowFile = filename;
+        $("#comfyinject_lora_rows").empty();
+        $("#comfyinject_lora_status").text(`Could not read ${filename}.`);
+        setLoraAddEnabled(false);
+        return;
+    }
+
+    if (token !== loraLoadToken) return;
+
+    loraWorkflowFile = filename;
+    const loaderId = findLoaderNodeId(entry.workflow);
+    if (!loaderId) {
+        loraRows = [];
+        loraLoaderId = null;
+        $("#comfyinject_lora_rows").empty();
+        $("#comfyinject_lora_status").text(`No {{CHECKPOINT}} node found in ${filename}.`);
+        setLoraAddEnabled(false);
+        return;
+    }
+
+    loraLoaderId = loaderId;
+    setLoraAddEnabled(true);
+    renderLoraPanel();
+}
+
+/**
+ * Renders one row per LoRA in application order from the cached runtime workflow.
+ */
+function renderLoraPanel() {
+    const entry = getRuntimeWorkflow(loraWorkflowFile);
+    const container = $("#comfyinject_lora_rows");
+    container.empty();
+
+    if (!entry || loraLoaderId === null) {
+        loraRows = [];
+        updateLoraStatus();
+        return;
+    }
+
+    loraRows = extractLoraChain(entry.workflow, loraLoaderId).map((node) => ({
+        nodeId: node.id,
+        name: node.name,
+        weight: node.weight,
+        appended: isAppendedLoraId(node.id),
+    }));
+
+    loraRows.forEach((row, index) => {
+        const nameControl = row.appended
+            ? `<input type="text" class="text_pole comfyinject-lora-name-input" list="comfyinject_lora_names" data-row-index="${index}" value="${escapeHtml(row.name)}" style="flex: 1;" />`
+            : `<span class="comfyinject-lora-name" data-row-index="${index}" title="${escapeHtml(row.name)}" style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(row.name)}</span>`;
+
+        container.append(`
+            <div class="flex-container flexGap5 alignItemsCenter" style="margin-bottom: 4px;">
+                ${nameControl}
+                <input
+                    type="number"
+                    step="0.05"
+                    class="text_pole comfyinject-lora-weight"
+                    data-row-index="${index}"
+                    value="${row.weight}"
+                    style="width: 80px;"
+                />
+                <div class="menu_button comfyinject-lora-remove" data-row-index="${index}" title="Remove this LoRA">
+                    <i class="fa-solid fa-xmark"></i>
+                </div>
+            </div>
+        `);
+    });
+
+    updateLoraStatus();
+}
+
+/**
+ * Refreshes the status line from the row count and the cached dirty flag.
+ * Empty/error messages set by loadLoraPanel are left untouched.
+ */
+function updateLoraStatus() {
+    const entry = getRuntimeWorkflow(loraWorkflowFile);
+    if (loraLoaderId === null || !entry) return;
+
+    const state = entry.dirty ? "unsaved changes" : "matches disk";
+    $("#comfyinject_lora_status").text(`${loraRows.length} LoRA(s) · ${state}`);
 }
 
 /**
@@ -295,6 +476,102 @@ function wireEvents() {
         workflowValidateTimer = setTimeout(() => {
             validateWorkflow($(this).val());
         }, 1500);
+
+        // Debounce — rebuild the LoRA panel 0.5s after the user stops typing
+        clearTimeout(loraPanelTimer);
+        loraPanelTimer = setTimeout(() => {
+            loadLoraPanel();
+        }, 500);
+    });
+
+    // LoRA Chain — weight edits mutate the runtime graph in place
+    $("#comfyinject_lora_rows").on("input", ".comfyinject-lora-weight", function () {
+        const row = loraRows[Number($(this).data("row-index"))];
+        const entry = getRuntimeWorkflow(loraWorkflowFile);
+        if (!row || !entry) return;
+
+        const value = parseFloat($(this).val());
+        if (!Number.isFinite(value)) return;
+
+        setLoraWeight(entry.workflow, row.nodeId, value);
+        markDirty(loraWorkflowFile);
+        updateLoraStatus();
+    });
+
+    // LoRA Chain — name edits on appended rows
+    $("#comfyinject_lora_rows").on("input", ".comfyinject-lora-name-input", function () {
+        const row = loraRows[Number($(this).data("row-index"))];
+        const entry = getRuntimeWorkflow(loraWorkflowFile);
+        if (!row || !entry) return;
+
+        const value = $(this).val();
+        if (!entry.workflow[row.nodeId]?.inputs) return;
+
+        entry.workflow[row.nodeId].inputs.lora_name = value;
+        row.name = value;
+        markDirty(loraWorkflowFile);
+        updateLoraStatus();
+    });
+
+    // LoRA Chain — removing a row rewires the graph and re-renders the chain
+    $("#comfyinject_lora_rows").on("click", ".comfyinject-lora-remove", function () {
+        const row = loraRows[Number($(this).data("row-index"))];
+        const entry = getRuntimeWorkflow(loraWorkflowFile);
+        if (!row || !entry) return;
+
+        if (!removeLoraNode(entry.workflow, row.nodeId)) return;
+        markDirty(loraWorkflowFile);
+        renderLoraPanel();
+    });
+
+    // LoRA Chain — append a model-only LoRA after the current chain
+    $("#comfyinject_lora_add").on("click", function () {
+        if (loraLoaderId === null) return;
+        const entry = getRuntimeWorkflow(loraWorkflowFile);
+        if (!entry) return;
+
+        if (!appendLoraNode(entry.workflow, loraLoaderId, "", 1)) return;
+        markDirty(loraWorkflowFile);
+        renderLoraPanel();
+        $("#comfyinject_lora_rows .comfyinject-lora-name-input").last().trigger("focus");
+    });
+
+    // LoRA Chain — discard edits and read the file again
+    $("#comfyinject_lora_reload").on("click", async function () {
+        const entry = getRuntimeWorkflow(loraWorkflowFile);
+        if (entry?.dirty && !confirm(`Discard unsaved LoRA edits for ${loraWorkflowFile}?`)) {
+            return;
+        }
+
+        try {
+            await reloadWorkflow(loraWorkflowFile);
+        } catch (err) {
+            // loadLoraPanel() reports unreadable files in the status line.
+        }
+        await loadLoraPanel();
+    });
+
+    // LoRA Chain — download the edited workflow JSON
+    $("#comfyinject_lora_save").on("click", function () {
+        if (loraRows.some((row) => row.appended && row.name.trim() === "")) {
+            toastr.warning("Name every added LoRA before saving.", "ComfyInject");
+            return;
+        }
+
+        const json = serializeWorkflow(loraWorkflowFile);
+        if (!json) {
+            toastr.warning("Load a workflow before saving.", "ComfyInject");
+            return;
+        }
+
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = loraWorkflowFile.split(/[\\/]/).pop() || "workflow.json";
+        link.click();
+        URL.revokeObjectURL(url);
+        toastr.success(`Downloaded ${loraWorkflowFile}. Replace it in workflows/ to persist.`, "ComfyInject");
     });
 
     // Negative prompt
@@ -529,4 +806,8 @@ export async function initUI() {
 
     // Silently try to populate the checkpoint list on load — no toast if ComfyUI isn't running
     refreshCheckpointList(false);
+
+    // Load the LoRA panel and its filename suggestions in the background
+    fetchLoraNames();
+    loadLoraPanel();
 }

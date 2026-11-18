@@ -35,6 +35,31 @@
                 <input id="comfyinject_workflow" type="text" class="text_pole" placeholder="comfyinject_default.json" />
             </div>
 
+            <!-- LoRA Chain -->
+            <div>
+                <div class="flex-container flexGap5 alignItemsCenter">
+                    <label>LoRA Chain</label>
+                    <small id="comfyinject_lora_status" style="margin-left: auto;"></small>
+                </div>
+                <div id="comfyinject_lora_rows" style="margin-top: 4px;"></div>
+                <div class="flex-container flexGap5" style="margin-top: 6px;">
+                    <div id="comfyinject_lora_add" class="menu_button menu_button_icon" title="Append a LoRA after the current chain">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>Add LoRA</span>
+                    </div>
+                    <div id="comfyinject_lora_reload" class="menu_button menu_button_icon" title="Discard edits and load the file again">
+                        <i class="fa-solid fa-rotate"></i>
+                        <span>Reload</span>
+                    </div>
+                    <div id="comfyinject_lora_save" class="menu_button menu_button_icon" title="Download the workflow with the current LoRA chain">
+                        <i class="fa-solid fa-download"></i>
+                        <span>Save JSON</span>
+                    </div>
+                </div>
+                <datalist id="comfyinject_lora_names"></datalist>
+                <small>LoRAs wired after the checkpoint/UNet node. Edits live in memory and are used for generation; Save downloads the updated workflow to replace the file in workflows/.</small>
+            </div>
+
             <hr class="sysHR" />
 
             <!-- Gallery Button -->
