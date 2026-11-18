@@ -290,7 +290,7 @@
                         <label style="width: 170px;">Timeout (ms)</label>
                         <input id="comfyinject_rewrite_timeout_ms" type="number" class="text_pole" min="5000" max="600000" step="5000" style="width: 120px;" />
                     </div>
-                    <small>How much narrative around the image is sent as context, how long the reply may be, and when to give up on the model.</small>
+                    <small>How much narrative around the image is sent as context, how long the reply may be, and when to give up on the model. Thinking models count hidden reasoning against the token limit, so keep this well above the expected answer length (4096+ recommended).</small>
 
                     <div class="flex-container flexGap5" style="margin-top: 8px;">
                         <div id="comfyinject_rewrite_debug" class="menu_button menu_button_icon" title="Log which rules the rewrite would use.">

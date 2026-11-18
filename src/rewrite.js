@@ -21,6 +21,11 @@ const RULES_BLOCK_NAME = "comfyinject";
 const RULES_MAX_CHARS = 8000;
 const CARD_MAX_CHARS = 1500;
 
+// Thinking models spend this same budget on hidden reasoning before they emit
+// any content.  If a low configured value runs out mid-thought the API returns
+// an empty message with finish_reason "length"; retry once with room to finish.
+const RETRY_MIN_TOKENS = 4096;
+
 // The fallback warning is worth showing once per session, not once per click.
 let warnedAboutFallback = false;
 
@@ -208,14 +213,37 @@ export async function rewritePromptWithLlm({ prompt, ar, shot, mes, imgIndex, si
         targetIndex: imgIndex,
     });
 
-    const raw = await withTimeout(
-        context.generateRaw({
-            prompt: userPrompt,
-            systemPrompt,
-            responseLength: Number(settings.rewrite_max_tokens) || 1200,
-        }),
-        Number(settings.rewrite_timeout_ms) || 0,
+    const timeoutMs = Number(settings.rewrite_timeout_ms) || 0;
+    let responseLength = Number(settings.rewrite_max_tokens) || RETRY_MIN_TOKENS;
+
+    const generate = length => withTimeout(
+        context.generateRaw({ prompt: userPrompt, systemPrompt, responseLength: length }),
+        timeoutMs,
     );
 
-    return { rewritten: sanitizeRewrittenPrompt(raw), rulesSource };
+    let raw;
+    try {
+        raw = await generate(responseLength);
+    } catch (error) {
+        // generateRaw throws "No message generated" when the API returned an
+        // empty content string.  A reasoning model that ran out of budget does
+        // exactly that, so give it one longer attempt.
+        if (responseLength >= RETRY_MIN_TOKENS || !/no message generated/i.test(String(error?.message ?? ""))) {
+            throw error;
+        }
+
+        console.warn(`[ComfyInject] Rewrite produced no content at ${responseLength} tokens; retrying with ${RETRY_MIN_TOKENS}.`);
+        responseLength = RETRY_MIN_TOKENS;
+        raw = await generate(responseLength);
+    }
+
+    let rewritten = sanitizeRewrittenPrompt(raw);
+
+    if (!rewritten && responseLength < RETRY_MIN_TOKENS) {
+        console.warn(`[ComfyInject] Rewrite produced no usable prompt at ${responseLength} tokens; retrying with ${RETRY_MIN_TOKENS}.`);
+        raw = await generate(RETRY_MIN_TOKENS);
+        rewritten = sanitizeRewrittenPrompt(raw);
+    }
+
+    return { rewritten, rulesSource };
 }
