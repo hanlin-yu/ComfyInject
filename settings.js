@@ -83,8 +83,10 @@ export const defaultSettings = Object.freeze({
     rewrite_rules_override: "",
     // Characters of narrative taken on each side of the image as scene context.
     rewrite_context_chars: 1200,
-    // Response length requested for the rewrite call.
-    rewrite_max_tokens: 1200,
+    // Response length requested for the rewrite call.  On thinking models the
+    // hidden reasoning counts against this budget, so this has to cover the
+    // reasoning plus the answer, not just the answer.
+    rewrite_max_tokens: 4096,
     // Give up waiting for the rewrite after this many milliseconds.
     rewrite_timeout_ms: 90000,
 

@@ -116,12 +116,17 @@ test("buildRewriteMessages puts the rules in the system prompt verbatim", () => 
     assert.match(systemPrompt, /=== SPECIFICATION ===/);
     assert.ok(systemPrompt.includes(rulesText), "rules appear verbatim");
     assert.match(systemPrompt, /No pipes/);
+    assert.match(systemPrompt, /Do not use those sections as a checklist/);
+    assert.match(systemPrompt, /Do not count tags/);
+    assert.match(systemPrompt, /REWRITE SHAPE/);
     assert.doesNotMatch(systemPrompt, /CLOSE shot:/, "no CLOSE line for a MEDIUM target");
 
     assert.match(prompt, /TARGET MARKER/);
     assert.match(prompt, /SHOT: MEDIUM/);
     assert.ok(prompt.includes("A student who lives in the library."));
     assert.ok(prompt.includes("She turned the page slowly."));
+    assert.match(prompt, /story context only/);
+    assert.match(prompt, /Do not plan, count tags/);
     assert.match(prompt, /<- TARGET/);
 });
 
