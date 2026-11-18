@@ -62,13 +62,12 @@ export function extractLoraChain(workflow, loaderId) {
         if (!next) break;
 
         const [nodeId, node] = next;
-        const inputs = node.inputs ?? {};
-        const weight = Number(inputs.strength_model ?? inputs.strength_clip ?? 1);
+        const weight = Number(node.inputs.strength_model ?? node.inputs.strength_clip ?? 1);
 
         chain.push({
             id: nodeId,
             classType: node.class_type,
-            name: String(inputs.lora_name ?? ""),
+            name: String(node.inputs.lora_name ?? ""),
             weight: Number.isFinite(weight) ? weight : 1,
         });
 
@@ -201,7 +200,7 @@ export function appendLoraNode(workflow, loaderId, name, weight) {
 /**
  * Drops appended LoRA nodes whose name is blank, without touching the original.
  * @param {object} workflow
- * @returns {object} the same workflow, or an unblanked clone when needed
+ * @returns {object} the same workflow when nothing is blank, otherwise a pruned clone
  */
 export function pruneBlankAddedLoras(workflow) {
     const blankIds = Object.entries(workflow ?? {})

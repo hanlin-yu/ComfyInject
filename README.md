@@ -24,6 +24,7 @@ When your LLM outputs a marker, ComfyInject intercepts it, sends the prompt to C
     <li><a href="#system-prompt">System Prompt</a></li>
     <li><a href="#image-gallery">Image Gallery</a></li>
     <li><a href="#retry-button">Retry Button</a></li>
+    <li><a href="#lora-chain">LoRA Chain</a></li>
     <li><a href="#custom-workflows">Custom Workflows</a></li>
     <li><a href="#how-it-works">How It Works</a></li>
     <li><a href="#known-limitations">Known Limitations</a></li>
@@ -369,7 +370,7 @@ ComfyInject finds the node that receives the `{{CHECKPOINT}}` placeholder and fo
 - **Remove** — deletes that LoRA and rewires its consumers to the node it was fed from, so the rest of the chain stays intact.
 - **Add LoRA** — appends a model-only LoRA at the end of the chain, nearest the sampler. The name field suggests the LoRAs ComfyUI reports through `/object_info`, and a row left with a blank name is ignored by generation.
 - **Reload** — discards your edits and reads the workflow file from disk again. It asks for confirmation when there are unsaved changes.
-- **Save JSON** — downloads the full workflow with your edits and the `{{…}}` placeholders intact. ComfyInject cannot write to the `workflows/` folder itself, so replace the file there with the download to persist the change.
+- **Save JSON** — downloads the full workflow with your edits and the `{{…}}` placeholders intact. Save warns you to name any added LoRA before downloading, because blank names are ignored by generation. ComfyInject cannot write to the `workflows/` folder itself, so replace the file there with the download to persist the change.
 
 Edits live in memory for the current browser session, so switching workflow filenames back and forth keeps each file's unsaved chain. Nothing is stored in extension settings, and a page reload discards anything you did not save into the file.
 

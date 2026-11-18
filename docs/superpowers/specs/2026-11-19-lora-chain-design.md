@@ -91,7 +91,7 @@ Set `strength_model` (fallback `strength_clip`) to the number. No-op if the node
 
 Returns the same object when nothing needs pruning; otherwise a `structuredClone` with every `comfyinject_lora_*` node whose `lora_name` is blank removed via `removeLoraNode` (consumers rewired). Generation uses this so an unfinished Add row cannot reach ComfyUI.
 
-All five functions are covered by `node:test` unit tests.
+All six graph functions are covered by `node:test` unit tests.
 
 ## UI (`settings.html`, `src/ui.js`)
 
@@ -104,13 +104,13 @@ LoRA Chain           6 LoRAs · unsaved changes
  LongLegsMoss-L4       [ 0.50 ]  [×]
  …
  my_extra_lora [text]  [ 0.80 ]  [×]   ← appended node, name editable + datalist
-[+ Add LoRA] [Reload from disk] [Save JSON]
+[+ Add LoRA] [Reload] [Save JSON]
 ```
 
-- On init and when the Workflow field changes (debounced), `getOrLoadWorkflow()` and render the chain. If the field is empty or the fetch fails, show the reason and disable Add.
+- On init and when the Workflow field changes (debounced), `loadLoraPanel()` refetches a clean cached file from disk (mirroring generation) and reuses a dirty runtime copy so unsaved edits survive, then renders the chain. If the field is empty or the fetch fails, show the reason and disable Add and Save.
 - Weight and name edits update the graph in place and refresh only the status line, so focus is kept; remove and Add re-render from a fresh `extractLoraChain`. Every edit marks the entry dirty. Add calls `appendLoraNode(workflow, loaderId, "", 1)` and focuses the new name field.
 - Appended nodes are recognised by the `comfyinject_lora_` id prefix: their name is an editable text input backed by a `<datalist>` fetched from `/object_info/LoraLoaderModelOnly` + `/object_info/LoraLoader` (silent on failure). All other rows show the name read-only.
-- `Reload from disk` refetches the file, discarding edits; confirms first when dirty.
+- `Reload` refetches the file, discarding edits; confirms first when dirty.
 - `Save JSON` builds a Blob from `serializeWorkflow()` and triggers a download named after the workflow file. It refuses with a warning while any appended row has a blank name, and does not clear the dirty flag — generation keeps using the edited copy until the user replaces the file and reloads.
 - Status line reports the chain size and dirty state, or why the panel is empty (no workflow file, fetch failed, no `{{CHECKPOINT}}` node).
 - The Advanced Settings reset button is unaffected (there is no new setting to reset).
@@ -134,7 +134,7 @@ Pure module, run with `node --test test/loraChain.test.mjs`:
 
 - Loader detection for `CheckpointLoaderSimple`, `UNETLoader`, and the no-placeholder case.
 - Chain extraction order/weights, including a full `LoraLoader`.
-- Weight set changes a copy, not the input workflow.
+- Weight set mutates the runtime copy in place.
 - Removal of a middle node rewires its successor to the upstream node.
 - Removal of a full `LoraLoader` rewires both MODEL and CLIP consumers.
 - Append-only to a chain-less workflow inserts after the loader and reuses former loader consumers.

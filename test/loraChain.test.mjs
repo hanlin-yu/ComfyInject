@@ -172,10 +172,19 @@ test("appendLoraNode returns null when the loader is missing", () => {
     assert.equal(appendLoraNode({}, "missing", "x", 1), null);
 });
 
+test("appendLoraNode splices after a full LoraLoader without touching its CLIP output", () => {
+    const wf = fullLoraWorkflow();
+    const id = appendLoraNode(wf, "base", "new.safetensors", 0.6);
+    assert.deepEqual(wf[id].inputs.model, ["lora", 0]);
+    assert.deepEqual(wf.sampler.inputs.model, [id, 0]);
+    assert.deepEqual(wf.positive.inputs.clip, ["lora", 1]);
+});
+
 test("pruneBlankAddedLoras removes blank appended nodes from a copy and rewires consumers", () => {
     const wf = chainedWorkflow();
     const blank = appendLoraNode(wf, "base", "", 1);
     const named = appendLoraNode(wf, "base", "named.safetensors", 1);
+    const before = structuredClone(wf);
     const pruned = pruneBlankAddedLoras(wf);
 
     assert.notEqual(pruned, wf);
@@ -184,9 +193,22 @@ test("pruneBlankAddedLoras removes blank appended nodes from a copy and rewires 
     assert.deepEqual(pruned.sampler.inputs.model, [named, 0]);
     assert.ok(wf[blank], "the runtime workflow is not mutated");
     assert.ok(wf[named]);
+    assert.deepEqual(wf, before);
 });
 
 test("pruneBlankAddedLoras returns the same object when nothing is blank", () => {
     const wf = chainedWorkflow();
     assert.equal(pruneBlankAddedLoras(wf), wf);
+});
+
+test("pruneBlankAddedLoras removes multiple blank nodes and rewires the sink", () => {
+    const wf = chainedWorkflow();
+    const first = appendLoraNode(wf, "base", "", 1);
+    const second = appendLoraNode(wf, "base", "  ", 1);
+    const named = appendLoraNode(wf, "base", "named.safetensors", 1);
+    const pruned = pruneBlankAddedLoras(wf);
+    assert.equal(pruned[first], undefined);
+    assert.equal(pruned[second], undefined);
+    assert.deepEqual(pruned[named].inputs.model, ["loraB", 0]);
+    assert.deepEqual(pruned.sampler.inputs.model, [named, 0]);
 });

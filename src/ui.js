@@ -2,7 +2,7 @@ import { MODULE_NAME, defaultSettings } from "../settings.js";
 import { openGallery } from "./gallery.js";
 import { appendLoraNode, extractLoraChain, findLoaderNodeId, removeLoraNode, setLoraWeight } from "./loraChain.js";
 import { resolveRulesText } from "./rewrite.js";
-import { getOrLoadWorkflow, getRuntimeWorkflow, markDirty, reloadWorkflow, serializeWorkflow } from "./workflowRuntime.js";
+import { getRuntimeWorkflow, markDirty, reloadWorkflow, serializeWorkflow } from "./workflowRuntime.js";
 
 const EXTENSION_FOLDER = `scripts/extensions/third-party/ComfyInject`;
 
@@ -138,6 +138,18 @@ function setLoraAddEnabled(enabled) {
 }
 
 /**
+ * Dims the Save button and blocks its pointer events until a loader is found.
+ * The click handler also checks `loraLoaderId` and the runtime entry, so a
+ * programmatic click cannot download without a loaded workflow.
+ * @param {boolean} enabled - Whether saving is allowed
+ */
+function setLoraSaveEnabled(enabled) {
+    $("#comfyinject_lora_save")
+        .css("opacity", enabled ? 1.0 : 0.4)
+        .css("pointer-events", enabled ? "auto" : "none");
+}
+
+/**
  * Fetches the LoRA filenames ComfyUI knows about and fills the name datalist.
  * Errors are swallowed silently — the datalist is only a convenience.
  */
@@ -167,9 +179,13 @@ async function fetchLoraNames() {
 
 /**
  * Loads the runtime copy of the configured workflow and renders its LoRA chain.
+ * A clean cached entry is re-read from disk (mirroring generation) so external
+ * file edits show up; a dirty entry is reused so unsaved edits are kept.
  * Stale async loads are discarded after a newer one starts.
+ * @param {object} [options]
+ * @param {boolean} [options.forceReload=false] - Ignore even a dirty cached copy
  */
-async function loadLoraPanel() {
+async function loadLoraPanel({ forceReload = false } = {}) {
     const filename = getSettings().workflow || "";
     const token = ++loraLoadToken;
 
@@ -180,21 +196,34 @@ async function loadLoraPanel() {
         $("#comfyinject_lora_rows").empty();
         $("#comfyinject_lora_status").text("Set a workflow filename.");
         setLoraAddEnabled(false);
+        setLoraSaveEnabled(false);
         return;
     }
 
-    let entry;
-    try {
-        entry = await getOrLoadWorkflow(filename);
-    } catch (err) {
-        if (token !== loraLoadToken) return;
-        loraRows = [];
-        loraLoaderId = null;
-        loraWorkflowFile = filename;
-        $("#comfyinject_lora_rows").empty();
-        $("#comfyinject_lora_status").text(`Could not read ${filename}.`);
-        setLoraAddEnabled(false);
-        return;
+    // Clear stale rows while the new file loads — the controls stay disabled
+    // until a loader is found.
+    loraRows = [];
+    loraLoaderId = null;
+    $("#comfyinject_lora_status").text("Loading…");
+    $("#comfyinject_lora_rows").empty();
+    setLoraAddEnabled(false);
+    setLoraSaveEnabled(false);
+
+    let entry = forceReload ? null : getRuntimeWorkflow(filename);
+    if (!entry || !entry.dirty) {
+        try {
+            entry = await reloadWorkflow(filename);
+        } catch (err) {
+            if (token !== loraLoadToken) return;
+            loraRows = [];
+            loraLoaderId = null;
+            loraWorkflowFile = filename;
+            $("#comfyinject_lora_rows").empty();
+            $("#comfyinject_lora_status").text(`Could not read ${filename}.`);
+            setLoraAddEnabled(false);
+            setLoraSaveEnabled(false);
+            return;
+        }
     }
 
     if (token !== loraLoadToken) return;
@@ -207,11 +236,13 @@ async function loadLoraPanel() {
         $("#comfyinject_lora_rows").empty();
         $("#comfyinject_lora_status").text(`No {{CHECKPOINT}} node found in ${filename}.`);
         setLoraAddEnabled(false);
+        setLoraSaveEnabled(false);
         return;
     }
 
     loraLoaderId = loaderId;
     setLoraAddEnabled(true);
+    setLoraSaveEnabled(true);
     renderLoraPanel();
 }
 
@@ -270,7 +301,7 @@ function updateLoraStatus() {
     const entry = getRuntimeWorkflow(loraWorkflowFile);
     if (loraLoaderId === null || !entry) return;
 
-    const state = entry.dirty ? "unsaved changes" : "matches disk";
+    const state = entry.dirty ? "unsaved changes" : "no unsaved changes";
     $("#comfyinject_lora_status").text(`${loraRows.length} LoRA(s) · ${state}`);
 }
 
@@ -530,6 +561,11 @@ function wireEvents() {
         const entry = getRuntimeWorkflow(loraWorkflowFile);
         if (!entry) return;
 
+        // Recover from a ComfyUI that was down when the page loaded.
+        if ($("#comfyinject_lora_names").children().length === 0) {
+            fetchLoraNames();
+        }
+
         if (!appendLoraNode(entry.workflow, loraLoaderId, "", 1)) return;
         markDirty(loraWorkflowFile);
         renderLoraPanel();
@@ -543,16 +579,14 @@ function wireEvents() {
             return;
         }
 
-        try {
-            await reloadWorkflow(loraWorkflowFile);
-        } catch (err) {
-            // loadLoraPanel() reports unreadable files in the status line.
-        }
-        await loadLoraPanel();
+        await loadLoraPanel({ forceReload: true });
     });
 
     // LoRA Chain — download the edited workflow JSON
     $("#comfyinject_lora_save").on("click", function () {
+        const entry = getRuntimeWorkflow(loraWorkflowFile);
+        if (loraLoaderId === null || !entry) return;
+
         if (loraRows.some((row) => row.appended && row.name.trim() === "")) {
             toastr.warning("Name every added LoRA before saving.", "ComfyInject");
             return;
@@ -569,8 +603,10 @@ function wireEvents() {
         const link = document.createElement("a");
         link.href = url;
         link.download = loraWorkflowFile.split(/[\\/]/).pop() || "workflow.json";
+        document.body.appendChild(link);
         link.click();
-        URL.revokeObjectURL(url);
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
         toastr.success(`Downloaded ${loraWorkflowFile}. Replace it in workflows/ to persist.`, "ComfyInject");
     });
 
