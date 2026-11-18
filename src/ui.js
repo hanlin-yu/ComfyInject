@@ -1,5 +1,6 @@
 import { MODULE_NAME, defaultSettings } from "../settings.js";
 import { openGallery } from "./gallery.js";
+import { resolveRulesText } from "./rewrite.js";
 
 const EXTENSION_FOLDER = `scripts/extensions/third-party/ComfyInject`;
 
@@ -203,6 +204,13 @@ function populateUI() {
 
     // Marker repair notifications
     $("#comfyinject_repair_toast_mode").val(settings.repair_toast_mode || "failures");
+
+    // AI prompt rewrite
+    $("#comfyinject_rewrite_auto_read_preset").prop("checked", settings.rewrite_auto_read_preset !== false);
+    $("#comfyinject_rewrite_rules_override").val(settings.rewrite_rules_override ?? "");
+    $("#comfyinject_rewrite_context_chars").val(settings.rewrite_context_chars);
+    $("#comfyinject_rewrite_max_tokens").val(settings.rewrite_max_tokens);
+    $("#comfyinject_rewrite_timeout_ms").val(settings.rewrite_timeout_ms);
 
     // Populate shot tags
     const shotContainer = $("#comfyinject_shot_tags");
@@ -450,6 +458,43 @@ function wireEvents() {
     $("#comfyinject_repair_toast_mode").on("change", function () {
         getSettings().repair_toast_mode = $(this).val();
         saveSettings();
+    });
+
+    // AI prompt rewrite — block toggle
+    $("#comfyinject_rewrite_toggle").on("click", function () {
+        $("#comfyinject_rewrite_block").toggle();
+    });
+
+    $("#comfyinject_rewrite_auto_read_preset").on("change", function () {
+        getSettings().rewrite_auto_read_preset = $(this).prop("checked");
+        saveSettings();
+    });
+
+    $("#comfyinject_rewrite_rules_override").on("input", function () {
+        getSettings().rewrite_rules_override = $(this).val();
+        saveSettings();
+    });
+
+    $("#comfyinject_rewrite_context_chars").on("input", function () {
+        getSettings().rewrite_context_chars = parseInt($(this).val(), 10) || 0;
+        saveSettings();
+    });
+
+    $("#comfyinject_rewrite_max_tokens").on("input", function () {
+        getSettings().rewrite_max_tokens = parseInt($(this).val(), 10) || 0;
+        saveSettings();
+    });
+
+    $("#comfyinject_rewrite_timeout_ms").on("input", function () {
+        getSettings().rewrite_timeout_ms = parseInt($(this).val(), 10) || 0;
+        saveSettings();
+    });
+
+    $("#comfyinject_rewrite_debug").on("click", async function () {
+        const { text, source } = await resolveRulesText();
+        console.log("[ComfyInject] Rewrite rules source:", source);
+        console.log(text);
+        toastr.info(`Rules source: ${source} (${text.length} characters) — see the console.`, "ComfyInject");
     });
 
     // Reset button — resets everything except comfy_host, checkpoint, and workflow

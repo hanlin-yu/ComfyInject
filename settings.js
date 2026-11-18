@@ -73,6 +73,21 @@ export const defaultSettings = Object.freeze({
     // "off" = no marker repair toasts
     repair_toast_mode: "failures",
 
+    // --- AI Prompt Rewrite ---
+    // Adds a wand button beside the retry button on every image: the LLM rewrites
+    // that image's prompt and the image is regenerated with the rewritten one.
+    // The rules are read from the prompt block named "ComfyInject" in the active
+    // preset, so editing the preset keeps the two in sync.
+    rewrite_auto_read_preset: true,
+    // When non-empty, these rules are used instead of the preset block.
+    rewrite_rules_override: "",
+    // Characters of narrative taken on each side of the image as scene context.
+    rewrite_context_chars: 1200,
+    // Response length requested for the rewrite call.
+    rewrite_max_tokens: 1200,
+    // Give up waiting for the rewrite after this many milliseconds.
+    rewrite_timeout_ms: 90000,
+
     // --- Shot Tags ---
     // Danbooru-style tags prepended to the positive prompt for each SHOT token.
     // Edit these to match your model's preferred framing vocabulary.

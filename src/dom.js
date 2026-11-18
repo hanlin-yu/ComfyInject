@@ -1,6 +1,7 @@
 import { hasImageMarker, parseImageMarkers, generateParsedMarker } from "./parse.js";
 import { generateImage } from "./comfy.js";
 import { saveLastSeed, getImageData } from "./state.js";
+import { rewritePromptWithLlm } from "./rewrite.js";
 import { MODULE_NAME } from "../settings.js";
 
 /**
@@ -318,6 +319,16 @@ const processingMessages = new Set();
 // processMessage() captures this at call time and discards results if it changed.
 let activeGenerationId = 0;
 
+// True between GENERATION_STARTED and GENERATION_ENDED/STOPPED for a visible
+// generation.  A prompt rewrite must not run alongside one: both would be
+// talking to the same API, and a new generation invalidates the message the
+// rewrite is about to write to.
+let generationInFlight = false;
+
+// Set while an LLM prompt rewrite is in flight.  Only one at a time — a second
+// generateRaw() would compete for the shared response-length setting.
+let activeRewrite = null;
+
 /**
  * Bumps the generation ID, invalidating any in-progress processMessage results,
  * and clears the per-message processing guard so new calls are not blocked.
@@ -537,10 +548,32 @@ function renderLiveStream() {
 }
 
 /**
- * Adds retry buttons to all rendered comfyinject images in a message.
+ * Builds one of the overlay buttons shown on a rendered image.
+ * Icons carry fa-fw so every button ends up the same width regardless of glyph.
+ * @param {string} className - Marker class, also used to detect an existing button
+ * @param {string} title - Tooltip text
+ * @param {string} icon - Full Font Awesome class list
+ * @param {string} sendDate - The message's send_date
+ * @param {number} imgIndex - Which image within the message (0-based)
+ * @returns {HTMLDivElement}
+ */
+function makeImageButton(className, title, icon, sendDate, imgIndex) {
+    const btn = document.createElement("div");
+    btn.className = className;
+    btn.dataset.senddate = sendDate;
+    btn.dataset.imgindex = imgIndex;
+    btn.title = title;
+    btn.style.cssText = "cursor: pointer; background: rgba(0,0,0,0.6); color: white; border-radius: 4px; padding: 2px 8px; font-size: 12px; line-height: 1.4; text-align: center;";
+    btn.innerHTML = `<i class="${icon}"></i>`;
+    return btn;
+}
+
+/**
+ * Adds the retry and prompt-rewrite buttons to all rendered comfyinject images
+ * in a message.
  * This is done via DOM manipulation (not in message.mes) because
  * ST's HTML sanitizer strips custom divs when rendering messages.
- * Each button stores send_date and imgindex for the retry handler.
+ * Each button stores send_date and imgindex for its handler.
  * @param {number} index - The current message array index (for DOM lookup via mesid)
  */
 function addRetryButtons(index) {
@@ -559,32 +592,59 @@ function addRetryButtons(index) {
     const sendDate = message.send_date;
 
     images.forEach((img, imgIndex) => {
-        // Don't add a second retry button if one already exists
-        if (img.parentElement?.querySelector(".comfyinject-retry")) return;
+        // Reuse the wrapper if an earlier pass already added one, so each button
+        // can be checked for on its own.
+        let wrapper = img.parentElement?.classList?.contains("comfyinject-wrapper") ? img.parentElement : null;
 
-        // Wrap the image in a relative container so we can position the button
-        const wrapper = document.createElement("div");
-        wrapper.className = "comfyinject-wrapper";
-        wrapper.style.cssText = "position: relative; display: inline-block;";
-        img.parentElement.insertBefore(wrapper, img);
-        wrapper.appendChild(img);
+        if (!wrapper) {
+            // Wrap the image in a relative container so we can position the buttons
+            wrapper = document.createElement("div");
+            wrapper.className = "comfyinject-wrapper";
+            wrapper.style.cssText = "position: relative; display: inline-block;";
+            img.parentElement.insertBefore(wrapper, img);
+            wrapper.appendChild(img);
+        }
 
-        // Create the retry button
-        const btn = document.createElement("div");
-        btn.className = "comfyinject-retry";
-        btn.dataset.senddate = sendDate;
-        btn.dataset.imgindex = imgIndex;
-        btn.title = "Regenerate with new seed";
-        btn.style.cssText = "position: absolute; top: 6px; right: 6px; cursor: pointer; background: rgba(0,0,0,0.6); color: white; border-radius: 4px; padding: 2px 8px; font-size: 12px; z-index: 10;";
-        btn.innerHTML = `<i class="fa-solid fa-rotate"></i>`;
+        // The buttons stack in a flex column so they stay aligned as a pair. Sizing
+        // them by hand with top offsets drifts between themes, whose icon line
+        // heights differ.
+        let actions = wrapper.querySelector(".comfyinject-actions");
+        if (!actions) {
+            actions = document.createElement("div");
+            actions.className = "comfyinject-actions";
+            actions.style.cssText = "position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 4px; z-index: 10;";
+            wrapper.appendChild(actions);
+        }
 
-        btn.addEventListener("click", async (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            await retryImage(sendDate, imgIndex, btn);
-        });
+        // Buttons added by an earlier build hang off the wrapper directly
+        for (const selector of [".comfyinject-retry", ".comfyinject-rewrite"]) {
+            const existing = wrapper.querySelector(selector);
+            if (existing && existing.parentElement !== actions) actions.appendChild(existing);
+        }
 
-        wrapper.appendChild(btn);
+        if (!actions.querySelector(".comfyinject-retry")) {
+            const btn = makeImageButton("comfyinject-retry", "Regenerate with new seed", "fa-solid fa-fw fa-rotate", sendDate, imgIndex);
+
+            btn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                await retryImage(sendDate, imgIndex, btn);
+            });
+
+            actions.appendChild(btn);
+        }
+
+        if (!actions.querySelector(".comfyinject-rewrite")) {
+            const btn = makeImageButton("comfyinject-rewrite", "Rewrite the prompt with AI, then regenerate", "fa-solid fa-fw fa-wand-magic-sparkles", sendDate, imgIndex);
+
+            btn.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                await rewriteImagePrompt(sendDate, imgIndex, btn);
+            });
+
+            actions.appendChild(btn);
+        }
     });
 }
 
@@ -933,7 +993,7 @@ async function retryImage(sendDate, imgIndex, retryBtn = null) {
 
     // Show generating state on the retry button
     if (retryBtn) {
-        retryBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i>`;
+        retryBtn.innerHTML = `<i class="fa-solid fa-fw fa-spinner fa-spin"></i>`;
         retryBtn.style.pointerEvents = "none";
     }
 
@@ -952,7 +1012,7 @@ async function retryImage(sendDate, imgIndex, retryBtn = null) {
         toastr.error("Image retry failed.", "ComfyInject");
         // Restore retry button
         if (retryBtn) {
-            retryBtn.innerHTML = `<i class="fa-solid fa-rotate"></i>`;
+            retryBtn.innerHTML = `<i class="fa-solid fa-fw fa-rotate"></i>`;
             retryBtn.style.pointerEvents = "auto";
         }
         return;
@@ -1031,10 +1091,11 @@ async function retryImage(sendDate, imgIndex, retryBtn = null) {
     if (renderedImage) {
         renderedImage.src = imageUrl;
         renderedImage.dataset.seed = String(effectiveSeed);
+        renderedImage.dataset.prompt = prompt;
 
         // The button survives the in-place update, so clear its spinner here.
         if (retryBtn) {
-            retryBtn.innerHTML = `<i class="fa-solid fa-rotate"></i>`;
+            retryBtn.innerHTML = `<i class="fa-solid fa-fw fa-rotate"></i>`;
             retryBtn.style.pointerEvents = "auto";
         }
     } else {
@@ -1056,6 +1117,319 @@ async function retryImage(sendDate, imgIndex, retryBtn = null) {
 }
 
 /**
+ * Rewrites one image's prompt with the LLM following the user's own preset
+ * rules, then regenerates the image with it.
+ *
+ * AR, SHOT and seed are kept, so the only thing that changes is how the image is
+ * described.  The rewritten prompt replaces data-prompt in the message, which
+ * means later retries and the model's next-turn context (via the outbound
+ * interceptor) use it too.
+ * @param {string} sendDate - The send_date of the message holding the image
+ * @param {number} imgIndex - Which image within the message (0-based)
+ * @param {HTMLElement|null} rewriteBtn - The clicked button, if available
+ */
+async function rewriteImagePrompt(sendDate, imgIndex, rewriteBtn = null) {
+    const context = SillyTavern.getContext();
+    const { updateMessageBlock } = SillyTavern.getContext();
+
+    if (activeRewrite) {
+        toastr.info("A prompt rewrite is already running.", "ComfyInject");
+        return;
+    }
+
+    if (generationInFlight || processingMessages.size > 0) {
+        toastr.warning("Wait for the current generation to finish first.", "ComfyInject");
+        return;
+    }
+
+    const messageIndex = findIndexBySendDate(sendDate);
+    const message = messageIndex === -1 ? null : context.chat[messageIndex];
+    if (!message) {
+        console.warn("[ComfyInject] Rewrite skipped: message not found", { sendDate, imgIndex });
+        return;
+    }
+
+    // The prompt lives in the img tag in mes — metadata never stores it
+    const imgTags = [...message.mes.matchAll(/<img class="comfyinject-image"[^>]*>/g)];
+    const previousTag = imgTags[imgIndex]?.[0];
+    if (!previousTag) {
+        console.warn("[ComfyInject] Rewrite skipped: image tag not found", { messageIndex, imgIndex, imageCount: imgTags.length });
+        return;
+    }
+
+    const prompt = previousTag.match(/data-prompt="([^"]*)"/)?.[1]?.replace(/&quot;/g, '"') || "";
+    if (!prompt) {
+        console.warn("[ComfyInject] Rewrite skipped: image prompt missing", { messageIndex, imgIndex });
+        return;
+    }
+
+    const storedSeed = parseInt(previousTag.match(/data-seed="([^"]*)"/)?.[1] ?? "", 10);
+    const seed = Number.isFinite(storedSeed) ? storedSeed : Math.floor(Math.random() * 9007199254740991);
+
+    // Supplementary fields come from metadata, using the same lookup as retry
+    if (!context.chatMetadata[MODULE_NAME]) {
+        context.chatMetadata[MODULE_NAME] = {};
+    }
+    const metadata = context.chatMetadata[MODULE_NAME];
+    const images = getImageData(metadata, sendDate).length > 0
+        ? getImageData(metadata, sendDate)
+        : getImageData(metadata, messageIndex);
+    const imageData = images[imgIndex] || {};
+    const previousMetaEntry = structuredClone(imageData);
+
+    const ar = imageData.ar || "SQUARE";
+    const shot = imageData.shot || "MEDIUM";
+
+    // Every image in the message, so the model can keep the framing varied and
+    // the character consistent across markers
+    const siblings = imgTags.map(([tag], index) => ({
+        prompt: tag.match(/data-prompt="([^"]*)"/)?.[1]?.replace(/&quot;/g, '"') || "",
+        ar: images[index]?.ar || "SQUARE",
+        shot: images[index]?.shot || "MEDIUM",
+    }));
+
+    // Both buttons on this image go busy for the whole run: a seed re-roll would
+    // race the rewrite for the same picture.
+    const setBusy = (busy) => {
+        const buttons = rewriteBtn?.parentElement?.querySelectorAll(".comfyinject-retry, .comfyinject-rewrite") ?? [];
+
+        buttons.forEach(button => {
+            button.style.pointerEvents = busy ? "none" : "auto";
+            button.style.opacity = busy ? "0.6" : "1";
+        });
+
+        if (rewriteBtn) {
+            rewriteBtn.innerHTML = busy
+                ? `<i class="fa-solid fa-fw fa-spinner fa-spin"></i>`
+                : `<i class="fa-solid fa-fw fa-wand-magic-sparkles"></i>`;
+        }
+    };
+
+    activeRewrite = { sendDate, imgIndex };
+    setBusy(true);
+
+    try {
+        let rewritten;
+        try {
+            const response = await rewritePromptWithLlm({
+                prompt,
+                ar,
+                shot,
+                mes: message.mes,
+                imgIndex,
+                siblings,
+            });
+
+            console.log("[ComfyInject] Rewrite rules source:", response.rulesSource);
+            rewritten = response.rewritten;
+        } catch (error) {
+            console.error("[ComfyInject] Prompt rewrite request failed:", error);
+
+            // generateRaw aborts when the user hits stop — that is not a failure
+            if (/cancel|abort|stop event/i.test(String(error?.message ?? ""))) {
+                toastr.warning("Prompt rewrite cancelled.", "ComfyInject");
+            } else {
+                toastr.error(`Prompt rewrite failed: ${error?.message || error}`, "ComfyInject");
+            }
+            return;
+        }
+
+        if (!rewritten) {
+            toastr.error("The model did not return a usable prompt — keeping the original.", "ComfyInject");
+            return;
+        }
+
+        if (rewritten === prompt) {
+            toastr.info("The model returned the same prompt — no image was generated.", "ComfyInject");
+            return;
+        }
+
+        // The LLM call can take a minute, so re-check that the message still
+        // holds the image we are about to replace
+        const currentIndex = findIndexBySendDate(sendDate);
+        const currentMessage = currentIndex === -1 ? null : context.chat[currentIndex];
+        const currentTag = currentMessage
+            ? [...currentMessage.mes.matchAll(/<img class="comfyinject-image"[^>]*>/g)][imgIndex]?.[0]
+            : null;
+
+        if (!currentMessage || currentTag !== previousTag || generationInFlight) {
+            toastr.warning("The message changed while rewriting — nothing was applied.", "ComfyInject");
+            return;
+        }
+
+        let result;
+        try {
+            result = await generateImage({
+                prompt: rewritten,
+                ar,
+                shot,
+                seed,
+                messageIndex: currentIndex,
+                bypassSeedLock: true,
+            });
+        } catch (error) {
+            console.error(`[ComfyInject] Rewrite image generation failed for message ${currentIndex} image ${imgIndex}:`, error);
+            toastr.error("Image regeneration failed — the prompt was left unchanged.", "ComfyInject");
+            return;
+        }
+
+        const { imageUrl, seed: effectiveSeed, promptId, filename, effectiveAr, effectiveShot, resolution, shotTags } = result;
+
+        // Save the seed that was actually used so LOCK works
+        saveLastSeed(effectiveSeed);
+
+        // Update metadata, same key fallback retryImage uses
+        const metaKey = metadata[sendDate] ? sendDate : (metadata[currentIndex] ? currentIndex : sendDate);
+        let metaEntry = metadata[metaKey];
+
+        if (!metaEntry) {
+            metaEntry = [];
+            metadata[metaKey] = metaEntry;
+        }
+
+        if (Array.isArray(metaEntry)) {
+            const existingEntry = metaEntry[imgIndex] && typeof metaEntry[imgIndex] === "object"
+                ? metaEntry[imgIndex]
+                : {};
+
+            metaEntry[imgIndex] = {
+                ...existingEntry,
+                seed: effectiveSeed,
+                ar: existingEntry.ar || ar,
+                shot: existingEntry.shot || shot,
+                promptId,
+                filename,
+                effectiveAr,
+                effectiveShot,
+                resolution,
+                shotTags,
+                repairMeta: existingEntry.repairMeta || null,
+            };
+        } else if (metaEntry && typeof metaEntry === "object") {
+            metadata[metaKey] = {
+                ...metaEntry,
+                seed: effectiveSeed,
+                ar: metaEntry.ar || ar,
+                shot: metaEntry.shot || shot,
+                promptId,
+                filename,
+                effectiveAr,
+                effectiveShot,
+                resolution,
+                shotTags,
+                repairMeta: metaEntry.repairMeta || null,
+            };
+        }
+
+        // Store the rewritten prompt on the image it was written for
+        const newImgTag = buildImgTag(imageUrl, rewritten, effectiveSeed);
+        let count = 0;
+        currentMessage.mes = currentMessage.mes.replace(/<img class="comfyinject-image"[^>]*>/g, (match) => {
+            if (count === imgIndex) {
+                count++;
+                return newImgTag;
+            }
+            count++;
+            return match;
+        });
+
+        // Swap the rendered image in place, the same way retry does
+        const renderedImage = document.querySelector(`[mesid="${currentIndex}"]`)
+            ?.querySelectorAll(".comfyinject-image, .custom-comfyinject-image")?.[imgIndex];
+
+        if (renderedImage) {
+            renderedImage.src = imageUrl;
+            renderedImage.dataset.seed = String(effectiveSeed);
+            renderedImage.dataset.prompt = rewritten;
+        } else {
+            try {
+                updateMessageBlock(currentIndex, currentMessage);
+            } catch (e) {
+                // ST's reasoning handler may crash on some messages, that's okay
+            }
+
+            addRetryButtons(currentIndex);
+        }
+
+        await context.saveMetadata();
+        await context.saveChat();
+
+        toastr.info("Prompt rewritten and image regenerated. Click to undo.", "ComfyInject", {
+            timeOut: 15000,
+            extendedTimeOut: 4000,
+            closeButton: true,
+            onclick: () => undoRewrite(sendDate, imgIndex, previousTag, previousMetaEntry),
+        });
+    } finally {
+        activeRewrite = null;
+        setBusy(false);
+    }
+}
+
+/**
+ * Puts back the image tag and metadata entry that a rewrite replaced.
+ *
+ * The whole tag is restored — image, prompt and seed — because the picture on
+ * screen was generated from the rewritten prompt; restoring only the text would
+ * leave the stored prompt and the visible image disagreeing.
+ * @param {string} sendDate - The send_date of the message
+ * @param {number} imgIndex - Which image within the message (0-based)
+ * @param {string} previousTag - The img tag as it was before the rewrite
+ * @param {object} previousMetaEntry - The metadata entry as it was before the rewrite
+ */
+async function undoRewrite(sendDate, imgIndex, previousTag, previousMetaEntry) {
+    const context = SillyTavern.getContext();
+    const { updateMessageBlock } = SillyTavern.getContext();
+
+    const messageIndex = findIndexBySendDate(sendDate);
+    const message = messageIndex === -1 ? null : context.chat[messageIndex];
+    const imgTags = message ? [...message.mes.matchAll(/<img class="comfyinject-image"[^>]*>/g)] : [];
+
+    if (!imgTags[imgIndex]) {
+        toastr.warning("That image is no longer available to undo.", "ComfyInject");
+        return;
+    }
+
+    let count = 0;
+    message.mes = message.mes.replace(/<img class="comfyinject-image"[^>]*>/g, (match) => {
+        if (count === imgIndex) {
+            count++;
+            return previousTag;
+        }
+        count++;
+        return match;
+    });
+
+    const metadata = context.chatMetadata[MODULE_NAME];
+    const metaKey = metadata?.[sendDate] ? sendDate : (metadata?.[messageIndex] ? messageIndex : sendDate);
+    if (Array.isArray(metadata?.[metaKey]) && Object.keys(previousMetaEntry ?? {}).length > 0) {
+        metadata[metaKey][imgIndex] = previousMetaEntry;
+    }
+
+    const renderedImage = document.querySelector(`[mesid="${messageIndex}"]`)
+        ?.querySelectorAll(".comfyinject-image, .custom-comfyinject-image")?.[imgIndex];
+
+    if (renderedImage) {
+        renderedImage.src = previousTag.match(/src="([^"]*)"/)?.[1] ?? "";
+        renderedImage.dataset.prompt = previousTag.match(/data-prompt="([^"]*)"/)?.[1]?.replace(/&quot;/g, '"') ?? "";
+        renderedImage.dataset.seed = previousTag.match(/data-seed="([^"]*)"/)?.[1] ?? "";
+    } else {
+        try {
+            updateMessageBlock(messageIndex, message);
+        } catch (e) {
+            // ST's reasoning handler may crash on some messages, that's okay
+        }
+
+        addRetryButtons(messageIndex);
+    }
+
+    await context.saveMetadata();
+    await context.saveChat();
+
+    toastr.success("Restored the previous prompt and image.", "ComfyInject");
+}
+
+/**
  * Registers all SillyTavern event listeners.
  * Called once from index.js on load.
  */
@@ -1070,6 +1444,7 @@ export function initDom() {
         }
 
         // New generation supersedes any in-progress results from a previous one.
+        generationInFlight = true;
         bumpGenerationId();
         resetLiveStream();
     });
@@ -1080,10 +1455,14 @@ export function initDom() {
         updateStreamText(text);
     });
 
-    eventSource.on(event_types.GENERATION_ENDED, stopLiveStreamScanner);
+    eventSource.on(event_types.GENERATION_ENDED, () => {
+        generationInFlight = false;
+        stopLiveStreamScanner();
+    });
 
     // User cancelled — discard all in-progress jobs and live stream state.
     eventSource.on(event_types.GENERATION_STOPPED, () => {
+        generationInFlight = false;
         bumpGenerationId();
         clearLiveStream();
     });
