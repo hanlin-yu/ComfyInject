@@ -1,7 +1,7 @@
 import { MODULE_NAME } from "../settings.js";
 import { resolveSeed } from "./state.js";
-
-const EXTENSION_FOLDER = `scripts/extensions/third-party/ComfyInject`;
+import { fetchWorkflow, getRuntimeWorkflow } from "./workflowRuntime.js";
+import { pruneBlankAddedLoras } from "./loraChain.js";
 
 // How long to wait between polls (ms)
 const POLL_INTERVAL_MS = 1000;
@@ -16,18 +16,19 @@ function getSettings() {
 }
 
 /**
- * Loads the workflow JSON from the workflows folder.
- * Uses the filename from settings so users can swap workflows.
+ * Loads the workflow for generation.
+ * A dirty runtime copy is used (pruned of blank added LoRAs) so panel edits
+ * apply; a clean copy is ignored so external file edits are still picked up.
  * @returns {Promise<object>} The parsed workflow object
  */
 async function loadWorkflow() {
     const settings = getSettings();
     const filename = settings.workflow || "comfyinject_default.json";
-    const response = await fetch(`/${EXTENSION_FOLDER}/workflows/${filename}`);
-    if (!response.ok) {
-        throw new Error(`[ComfyInject] Failed to load workflow "${filename}": ${response.status}`);
+    const runtime = getRuntimeWorkflow(filename);
+    if (runtime?.dirty) {
+        return pruneBlankAddedLoras(runtime.workflow);
     }
-    return await response.json();
+    return await fetchWorkflow(filename);
 }
 
 /**
