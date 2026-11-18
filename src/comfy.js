@@ -28,7 +28,7 @@ async function loadWorkflow() {
     if (runtime?.dirty) {
         return pruneBlankAddedLoras(runtime.workflow);
     }
-    return await fetchWorkflow(filename);
+    return fetchWorkflow(filename);
 }
 
 /**

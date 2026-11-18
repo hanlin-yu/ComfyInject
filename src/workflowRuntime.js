@@ -20,7 +20,7 @@ export async function fetchWorkflow(filename) {
     if (!response.ok) {
         throw new Error(`Failed to load workflow "${filename}": ${response.status}`);
     }
-    return await response.json();
+    return response.json();
 }
 
 /**
@@ -63,7 +63,7 @@ export function markDirty(filename) {
  */
 export async function reloadWorkflow(filename) {
     cache.delete(filename);
-    return await getOrLoadWorkflow(filename);
+    return getOrLoadWorkflow(filename);
 }
 
 /**

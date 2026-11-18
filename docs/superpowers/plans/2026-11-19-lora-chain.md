@@ -302,7 +302,7 @@ Expected: FAIL — the four new exports are missing.
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `node --test test/loraChain.test.mjs`
-Expected: PASS — 20 tests.
+Expected: PASS — 22 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -538,9 +538,9 @@ let loraPanelTimer = null;
 - `escapeHtml(value)` — replace `&`, `<`, `>`, `"`, `'`.
 - `isAppendedLoraId(id)` — `id.startsWith("comfyinject_lora_")`.
 - `async function fetchLoraNames()` — fetch `/object_info/LoraLoaderModelOnly` and `/object_info/LoraLoader` from `settings.comfy_host`; collect `data[cls].input.required.lora_name[0]` into a Set; fill `#comfyinject_lora_names` with `<option value="...">`; swallow all errors silently.
-- `async function loadLoraPanel()` — read `getSettings().workflow || ""`. Empty → rows cleared, `loraLoaderId = null`, status `Set a workflow filename.`, Add disabled. Otherwise bump `loraLoadToken`, `await getOrLoadWorkflow(filename)`; ignore stale tokens. On failure set `loraLoaderId = null`, show `Could not read <filename>.`, and disable Add. Find the loader; if missing set `loraLoaderId = null`, show `No {{CHECKPOINT}} node found in <filename>.`, and disable Add; otherwise store `loraLoaderId = findLoaderNodeId(entry.workflow)` and call `renderLoraPanel()`.
+- `async function loadLoraPanel({ forceReload = false } = {})` — read `getSettings().workflow || ""`. Empty → rows cleared, `loraLoaderId = null`, status `Set a workflow filename.`, Add and Save disabled. Otherwise bump `loraLoadToken`, then set status `Loading…`, clear `loraRows`/`loraLoaderId`, empty the rows container, and disable Add and Save. Reuse the cached entry when it is dirty and `forceReload` is false; otherwise refetch a clean entry from disk with `reloadWorkflow(filename)` (mirroring generation). Ignore stale tokens. On failure set `loraLoaderId = null`, show `Could not read <filename>.`, and keep both buttons disabled. Find the loader; if missing set `loraLoaderId = null`, show `No {{CHECKPOINT}} node found in <filename>.`, and keep both buttons disabled; otherwise store `loraLoaderId = findLoaderNodeId(entry.workflow)`, enable Add and Save, and call `renderLoraPanel()`.
 - `function renderLoraPanel()` — read the cached entry; map `extractLoraChain(...)` to rows of shape `{ nodeId: node.id, name, weight, appended: isAppendedLoraId(node.id) }` and store in `loraRows`. Build one row per entry: name as a read-only `<span class="comfyinject-lora-name" title="...">` (ellipsis, flex 1) or, for appended rows, `<input type="text" class="text_pole comfyinject-lora-name-input" list="comfyinject_lora_names" value="...">`; a `<input type="number" step="0.05" class="text_pole comfyinject-lora-weight" style="width: 80px;">`; a remove `<div class="menu_button comfyinject-lora-remove"><i class="fa-solid fa-xmark"></i></div>`. Each element carries `data-row-index`. Call `updateLoraStatus()`.
-- `function updateLoraStatus()` — `${loraRows.length} LoRA(s) · ${entry.dirty ? "unsaved changes" : "matches disk"}`, or the empty/error message already set.
+- `function updateLoraStatus()` — `${loraRows.length} LoRA(s) · ${entry.dirty ? "unsaved changes" : "no unsaved changes"}`, or the empty/error message already set.
 
 - [ ] **Step 4: Wire the events in `wireEvents()`**
 
@@ -560,7 +560,7 @@ In `initUI()`, after `refreshCheckpointList(false)`, call `fetchLoraNames()` and
 
 Start SillyTavern (`node server.js` from `T:/SillyTavern`), open the UI, and check in the ComfyInject settings drawer:
 
-1. Workflow `moss.json` → 6 rows in application order (`moss_context…`, `moss_age_silder…`, `AgeSlider_MOSS-base`, `Waist…`, `LongLegsMoss…`, `realskin…`); status `6 LoRA(s) · matches disk`.
+1. Workflow `moss.json` → one row per LoRA wired after the base/UNet node, in application order, each showing the file's weight; status shows the row count + `no unsaved changes`.
 2. Change the first weight → status `unsaved changes`.
 3. Add LoRA → row with an empty name input; type a name from the dropdown.
 4. Remove a middle row → it disappears; the chain still lists in order.
