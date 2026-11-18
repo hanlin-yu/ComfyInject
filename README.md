@@ -359,6 +359,26 @@ Settings under **AI Prompt Rewrite**: rules source, override text, context windo
 
 ---
 
+## LoRA Chain
+
+The **LoRA Chain** panel sits directly below the **Workflow** field and shows the LoRAs your workflow already applies.
+
+ComfyInject finds the node that receives the `{{CHECKPOINT}}` placeholder and follows the linear MODEL chain after it, listing every `LoraLoader` / `LoraLoaderModelOnly` node in the order it is applied (checkpoint → sampler).
+
+- **Weights** — edit the `strength_model` value of any row. Generation uses the new weight immediately; no save is required.
+- **Remove** — deletes that LoRA and rewires its consumers to the node it was fed from, so the rest of the chain stays intact.
+- **Add LoRA** — appends a model-only LoRA at the end of the chain, nearest the sampler. The name field suggests the LoRAs ComfyUI reports through `/object_info`, and a row left with a blank name is ignored by generation.
+- **Reload** — discards your edits and reads the workflow file from disk again. It asks for confirmation when there are unsaved changes.
+- **Save JSON** — downloads the full workflow with your edits and the `{{…}}` placeholders intact. ComfyInject cannot write to the `workflows/` folder itself, so replace the file there with the download to persist the change.
+
+Edits live in memory for the current browser session, so switching workflow filenames back and forth keeps each file's unsaved chain. Nothing is stored in extension settings, and a page reload discards anything you did not save into the file.
+
+Only the linear chain is mirrored: LoRAs on side branches are not listed, and external workflows without a `{{CHECKPOINT}}` placeholder have no chain to show. The panel reports why it is empty and generation proceeds unchanged.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+---
+
 ## Custom Workflows
 
 The default workflow (`workflows/comfyinject_default.json`) uses only built-in ComfyUI nodes and works out of the box with any standard checkpoint.

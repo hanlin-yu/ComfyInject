@@ -26,6 +26,8 @@ Your workflow JSON can use any of the following placeholder strings. ComfyInject
 
 > The quotes are part of the placeholder syntax. In your JSON file, the value field must be the placeholder string in quotes, e.g. `"seed": "{{SEED}}"`. ComfyInject replaces the entire quoted string including the quotes with the correct typed value.
 
+> **LoRA Chain panel:** The settings panel only mirrors the linear chain of `LoraLoader` / `LoraLoaderModelOnly` nodes reachable from the `{{CHECKPOINT}}` node's MODEL output. LoRAs on side branches are not listed. LoRAs added with **Add LoRA** are stored as `LoraLoaderModelOnly` nodes whose ids are prefixed `comfyinject_lora_`.
+
 ### About `{{CHECKPOINT}}`
 
 Despite the name, this placeholder isn't limited to checkpoint models. It gets replaced with whatever you type into the **Checkpoint** field in the extension settings. If your workflow uses a `UNETLoader`, `DiffusionModelLoader`, or any other node that loads a model by filename, you can use `"{{CHECKPOINT}}"` in that node's model field and type the correct filename into ComfyInject's Checkpoint setting. All ComfyInject does is a text replacement — it doesn't care what type of node receives the value.
