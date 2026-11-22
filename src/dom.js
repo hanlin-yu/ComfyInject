@@ -1469,8 +1469,19 @@ export function initDom() {
 
     // Process new bot messages as they are rendered.
     // checkGenerationId: true so cancellation/retry/new-generation discards results.
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (index) => {
-        await processMessage(index, { checkGenerationId: true });
+    //
+    // Do NOT await processMessage here. ST's event emitter awaits every listener, and
+    // processMessage waits for every ComfyUI image. Holding CHARACTER_MESSAGE_RENDERED
+    // open keeps the old generation's promise alive; if the user regenerates meanwhile,
+    // the old generation later sets the global `streamingProcessor` to null, so the new
+    // generation's finish check sees a null processor and skips onFinishStreaming. Its
+    // CHARACTER_MESSAGE_RENDERED never fires, its placeholders never resolve, and the
+    // finished ComfyUI images are never inserted. Fire-and-forget keeps the generation
+    // lifecycle short; images continue in the background and render via handleJobResult.
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, (index) => {
+        processMessage(index, { checkGenerationId: true }).catch((error) => {
+            console.error("[ComfyInject] processMessage failed:", error);
+        });
     });
 
     // Re-scan when chat changes — clear everything first so no stale jobs survive.
